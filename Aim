@@ -1,0 +1,1203 @@
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/bot1200/Li/refs/heads/main/Li", true))()
+
+local ui = Library:CreateUI(string.char(65, 105, 109, 98, 111, 116, 32, 118, 53), string.char(66, 121, 32, 67, 97, 112, 121, 98, 97, 114, 97, 83, 99, 114, 105, 112, 116))
+
+local tab1, tab2, tab3, tab4 = ui:AddTab("aimbot"), ui:AddTab("Visual"), ui:AddTab("Hitbox Expander"), ui:AddTab("Local Player")
+
+local configFileName = "Aimbotv4.txt"
+
+local function saveConfig(stateTable)
+    writefile(configFileName, game.HttpService:JSONEncode(stateTable))
+end
+
+local function loadConfig()
+    if isfile(configFileName) then
+        local success, data = pcall(function()
+            return game.HttpService:JSONDecode(readfile(configFileName))
+        end)
+        
+        if success and type(data) == "table" then
+            return data
+        end
+    end
+    return {}
+end
+
+local savedConfig = loadConfig()
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+
+local smoothness = savedConfig.smoothness or 0.2
+local teamCheck = savedConfig.teamCheck or false
+local wallCheck = savedConfig.wallCheck or true
+local aimDistance = savedConfig.aimDistance or 100
+local aimPart = savedConfig.aimPart or "Head"
+local ringSize = savedConfig.ringSize or 120
+local cameraLock = savedConfig.cameraLock or false
+local ringColor = savedConfig.ringColor or Color3.fromRGB(0, 0, 255)
+local checkAlive = savedConfig.checkAlive or true
+local isActive = false
+local lockedPlayer = nil
+local prediction = savedConfig.prediction or false
+local predictionTimeHorizontal = savedConfig.predictionTimeHorizontal or 0.10
+local predictionTimeVertical = savedConfig.predictionTimeVertical or 0.04
+local predictionOffset = savedConfig.predictionOffset or false
+local offsetHorizontal = savedConfig.offsetHorizontal or 0.4
+local offsetVertical = savedConfig.offsetVertical or 0.3
+
+local ring = Drawing.new("Circle")
+ring.Radius = ringSize
+ring.Thickness = 1
+ring.Color = ringColor
+ring.Filled = false
+ring.Visible = false
+print("6/100")
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+    ring.Position = Camera.ViewportSize / 2
+end)
+ring.Position = Camera.ViewportSize / 2
+
+local existingGui = CoreGui:FindFirstChild("Button")
+if existingGui then existingGui:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "mygui"
+screenGui.Parent = game:GetService("CoreGui")
+
+local button = Instance.new("TextButton")
+local UICorner = Instance.new("UICorner")
+local clickSound = Instance.new("Sound")
+local isActive = false
+
+button.Name = "Button"
+button.Size = UDim2.new(0, 100, 0, 50)
+button.Position = UDim2.new(1, -110, 0, 10)
+button.Text = "OFF"
+button.Font = Enum.Font.Gotham
+button.TextSize = 14
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+button.BackgroundTransparency = 0.6
+button.Draggable = true
+button.BorderSizePixel = 0
+button.Parent = screenGui
+
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = button
+
+clickSound.SoundId = "rbxassetid://1673280232"
+clickSound.Volume = 0.5
+clickSound.Parent = button
+
+local aimbotKey = Enum.KeyCode.E
+
+local function toggleButton()
+    isActive = not isActive
+    if isActive then
+        button.Text = "ON"
+        button.BackgroundColor3 = Color3.fromRGB(173, 216, 230)
+        ring.Visible = true
+    else
+        button.Text = "OFF"
+        button.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+        ring.Visible = false
+        lockedPlayer = nil
+    end
+    clickSound:Play() 
+end
+
+local function onKeyPress(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == aimbotKey then
+        toggleButton()
+    end
+end
+
+game:GetService("UserInputService").InputBegan:Connect(onKeyPress)
+
+button.MouseButton1Click:Connect(toggleButton)
+
+button:TweenSize(UDim2.new(0, 110, 0, 60), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
+wait(0.2)
+button:TweenSize(UDim2.new(0, 100, 0, 50), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
+print("7/100")
+local function isPointInRing(screenPosition)
+    local center = ring.Position
+    local distance = (screenPosition - center).Magnitude
+    local tolerance = 10
+    return distance <= (ring.Radius + tolerance)
+end
+
+local function isWallBetween(targetPosition, targetCharacter)
+    if not wallCheck then return false end
+
+    local localPlayerCharacter = Players.LocalPlayer.Character
+    if not localPlayerCharacter then return false end
+
+    local part = targetCharacter and targetCharacter:FindFirstChild(aimPart)
+    if not part or not part.Position then return false end
+
+    local ray = Ray.new(Camera.CFrame.Position, part.Position - Camera.CFrame.Position)
+    local hit, _ = workspace:FindPartOnRayWithIgnoreList(ray, {localPlayerCharacter})
+    if hit and not hit:IsDescendantOf(targetCharacter) then return true end
+
+    return false
+end
+
+local function findClosestPlayerInRing()
+    local localPlayer = Players.LocalPlayer
+    local closestPlayer = nil
+    local closestDistance = math.huge
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= localPlayer and player.Character then
+            if teamCheck and player.Team == localPlayer.Team then
+                continue
+            end
+
+            local character = player.Character
+            local humanoid = character:FindFirstChild("Humanoid")
+            
+            if checkAlive and (not humanoid or humanoid.Health <= 0) then
+                continue
+            end
+
+            local targetParts = {"Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart"}
+            local inRing = false
+            local closestPart = nil
+
+            for _, partName in pairs(targetParts) do
+                local targetPart = character:FindFirstChild(partName)
+                if targetPart then
+                    local screenPosition, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    if onScreen and isPointInRing(Vector2.new(screenPosition.X, screenPosition.Y)) then
+                        if not isWallBetween(targetPart.Position, character) then
+                            inRing = true
+                            closestPart = targetPart
+                            break
+                        end
+                    end
+                end
+            end
+
+            if inRing then
+                local distance = (character.HumanoidRootPart.Position - localPlayer.Character.HumanoidRootPart.Position).Magnitude
+                if distance <= aimDistance and distance < closestDistance then
+                    closestDistance = distance
+                    closestPlayer = player
+                end
+            end
+        end
+    end
+
+    return closestPlayer, closestDistance
+end
+
+local function predictPlayerMovement(player, targetPart)
+    if not prediction then return targetPart.Position end
+
+    local velocity = player.Character.HumanoidRootPart.AssemblyLinearVelocity
+    local predictionPosition = targetPart.Position
+
+    if velocity.Magnitude > 0 then
+        predictionPosition = predictionPosition + (velocity * predictionTimeHorizontal)
+    end
+
+    predictionPosition = predictionPosition + Vector3.new(0, velocity.Y * predictionTimeVertical, 0)
+
+    if predictionOffset then
+        predictionPosition = predictionPosition + Vector3.new(offsetHorizontal, offsetVertical, 0)
+    end
+
+    return predictionPosition
+end
+
+local function focusOnClosestPlayerInRing()
+    if not isActive then return end
+
+    ring.Radius = ringSize
+    ring.Color = ringColor
+
+    local closestPlayer, closestDistance
+    if cameraLock and lockedPlayer then
+        closestPlayer = lockedPlayer
+    else
+        closestPlayer, closestDistance = findClosestPlayerInRing()
+        if cameraLock and closestPlayer then
+            lockedPlayer = closestPlayer
+        end
+    end
+
+    if closestPlayer and closestPlayer.Character then
+        local targetPart = closestPlayer.Character:FindFirstChild(aimPart)
+        if not targetPart then
+            targetPart = closestPlayer.Character:FindFirstChild("Torso") or closestPlayer.Character:FindFirstChild("UpperTorso")
+        end
+
+        if targetPart then
+            local predictedPosition = predictPlayerMovement(closestPlayer, targetPart)
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, predictedPosition), smoothness)
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(focusOnClosestPlayerInRing)
+print("8/100")
+
+Library.addDropdown(tab1, "Aim Part", "HumanoidRootPart", { "Head", "HumanoidRootPart", "LeftHand", "RightHand", "LeftLeg", "RightLeg" }, function(selected)
+    aimPart = selected
+    savedConfig.aimPart = selected
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Fov", "120", "", true, function(inputText)
+    ringSize = tonumber(inputText)
+    savedConfig.ringSize = ringSize
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Aim Distance", "100", "", true, function(inputText)
+    aimDistance = tonumber(inputText)
+    savedConfig.aimDistance = aimDistance
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Smoothness", "0.2", "",true, function(inputText)
+    smoothness = tonumber(inputText)
+    savedConfig.smoothness = smoothness
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Prediction Time Horizontal", "0.08", "",true, function(inputText)
+    predictionTimeHorizontal = tonumber(inputText)
+    savedConfig.predictionTimeHorizontal = predictionTimeHorizontal
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Prediction Time Vertical", "0.02", "",true, function(inputText)
+    predictionTimeVertical = tonumber(inputText)
+    savedConfig.predictionTimeVertical = predictionTimeVertical
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Offset Prediction Horizontal", "0.5", "",true, function(inputText)
+    offsetHorizontal = tonumber(inputText)
+    savedConfig.offsetHorizontal = offsetHorizontal
+    saveConfig(savedConfig)
+end)
+
+Library.addTextbox(tab1, "Offset Prediction Vertical", "0.3", "",true, function(inputText)
+    offsetVertical = tonumber(inputText)
+    savedConfig.offsetVertical = offsetVertical
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Team Check", "", teamCheck, function(state)
+    teamCheck = state
+    savedConfig.teamCheck = state
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Wall Check", "", wallCheck, function(state)
+    wallCheck = state
+    savedConfig.wallCheck = state
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Camera Lock", "", cameraLock, function(state)
+    cameraLock = state
+    savedConfig.cameraLock = state
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Check Alive", "", checkAlive, function(state)
+    checkAlive = state
+    savedConfig.checkAlive = state
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Prediction", "", prediction, function(state)
+    prediction = state
+    savedConfig.prediction = state
+    saveConfig(savedConfig)
+end)
+
+Library.addToggle(tab1, "Offset Prediction", "", predictionOffset, function(state)
+    predictionOffset = state
+    savedConfig.predictionOffset = state
+    saveConfig(savedConfig)
+end)
+
+Library.AddColorPicker(tab1, "Ring Color", ringColor, function(color)
+    ringColor = color
+    savedConfig.ringColor = color
+    saveConfig(savedConfig)
+end)
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local RunService = game:GetService("RunService")
+
+local lineScopeTable = {}
+local lineScopeActive = savedConfig.lineScopeActive or false
+local esp = savedConfig.espEnabled or false
+
+local function getTeamsWithPlayers()
+    local teams = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Team then
+            teams[p.Team] = (teams[p.Team] or 0) + 1
+        end
+    end
+    return teams
+end
+
+local function moreThanOneTeam()
+    local teams = getTeamsWithPlayers()
+    local count = 0
+    for _, numPlayers in pairs(teams) do
+        if numPlayers > 0 then
+            count = count + 1
+        end
+    end
+    return count > 1
+end
+
+local function getValidTargets()
+    local validTargets = {}
+    local multipleTeams = moreThanOneTeam()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            if multipleTeams then
+                if player.Team ~= LocalPlayer.Team then
+                    table.insert(validTargets, player)
+                end
+            else
+                table.insert(validTargets, player)
+            end
+        end
+    end
+    return validTargets
+end
+
+local function CreateLineScope(player)
+    if lineScopeTable[player] then return end
+
+    local lineScope = {}  
+    lineScope.Circle = Drawing.new("Circle")  
+    lineScope.Circle.Thickness = 1
+    lineScope.Circle.Filled = false
+    lineScope.Circle.Visible = lineScopeActive
+    
+    lineScope.Line = Drawing.new("Line")  
+    lineScope.Line.Thickness = 2
+    lineScope.Line.Visible = lineScopeActive
+    
+    lineScopeTable[player] = lineScope
+end
+
+local function UpdateLineScope()
+    if not lineScopeActive then return end
+
+    local validTargets = getValidTargets()
+    local validTargetSet = {}
+    for _, player in ipairs(validTargets) do
+        validTargetSet[player] = true
+    end
+
+    for player, lineScope in pairs(lineScopeTable) do  
+        local isValid = validTargetSet[player]
+        if isValid and player.Character and player.Character:FindFirstChild("Head") then  
+            local Head = player.Character.Head  
+            local headPos, headOnScreen = Camera:WorldToViewportPoint(Head.Position)
+
+            lineScope.Circle.Visible = headOnScreen
+            lineScope.Line.Visible = headOnScreen
+
+            if headOnScreen then  
+                local teamColor = player.Team and player.Team.TeamColor.Color or Color3.new(1, 1, 1)
+                lineScope.Circle.Color = teamColor
+                lineScope.Line.Color = teamColor
+                
+                lineScope.Circle.Position = Vector2.new(headPos.X, headPos.Y)  
+                lineScope.Circle.Radius = 150 / headPos.Z  
+                
+                local lookVector = Head.CFrame.LookVector * 5
+                local lookPos = Head.Position + lookVector  
+                local screenPosStart = Vector2.new(headPos.X, headPos.Y)
+                local screenPosEnd = Camera:WorldToViewportPoint(lookPos)
+                
+                if screenPosEnd then
+                    lineScope.Line.From = screenPosStart
+                    lineScope.Line.To = Vector2.new(screenPosEnd.X, screenPosEnd.Y)
+                end
+            end  
+        else  
+            lineScope.Circle.Visible = false  
+            lineScope.Line.Visible = false  
+        end  
+    end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        if player ~= LocalPlayer then
+            CreateLineScope(player)
+        end
+    end)
+    if player ~= LocalPlayer and player.Character then
+        CreateLineScope(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if lineScopeTable[player] then
+        for _, drawing in pairs(lineScopeTable[player]) do
+            drawing:Remove()
+        end
+        lineScopeTable[player] = nil
+    end
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        player.CharacterAdded:Connect(function()
+            CreateLineScope(player)
+        end)
+        if player.Character then
+            CreateLineScope(player)
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(UpdateLineScope)
+
+local function ToggleLineScope(state)
+    lineScopeActive = state
+    savedConfig.lineScopeActive = state
+    saveConfig(savedConfig)
+    for _, lineScope in pairs(lineScopeTable) do
+        lineScope.Circle.Visible = state
+        lineScope.Line.Visible = state
+    end
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local camera = game:GetService("Workspace").CurrentCamera
+
+local Settings = {
+    Tracer_Color = Color3.new(0, 1, 0),
+    Tracer_Thickness = 1,
+    Tracer_Origin = "Top",
+    Tracers = savedConfig.tracersEnabled or false
+}
+
+local function NewLine(thickness, color)
+    local line = Drawing.new("Line")
+    line.Visible = false
+    line.Color = color
+    line.Thickness = thickness
+    line.Transparency = 1
+    return line
+end
+
+local function UpdateESP(plr)
+    local tracer = NewLine(Settings.Tracer_Thickness, Settings.Tracer_Color)
+
+    game:GetService("RunService").RenderStepped:Connect(function()
+        if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+            local HumPos, OnScreen = camera:WorldToViewportPoint(plr.Character.HumanoidRootPart.Position)
+            if OnScreen then
+                local headPos = camera:WorldToViewportPoint(plr.Character.Head.Position)
+                local DistanceY = math.clamp((Vector2.new(headPos.X, headPos.Y) - Vector2.new(HumPos.X, HumPos.Y)).magnitude, 2, math.huge)
+
+                local origin = Settings.Tracer_Origin == "Top" and Vector2.new(camera.ViewportSize.X*0.5, 0) or Vector2.new(camera.ViewportSize.X*0.5, camera.ViewportSize.Y)
+
+                tracer.From = origin
+                tracer.To = Vector2.new(HumPos.X, HumPos.Y + DistanceY*2)
+
+                tracer.Color = plr.TeamColor.Color
+                tracer.Visible = Settings.Tracers
+            else
+                tracer.Visible = false
+            end
+        else
+            tracer.Visible = false
+        end
+    end)
+end
+
+Library.addDropdown(tab2, "Tracer Metod" , "top",  {"Top", "Bottom"}, function(selected)
+    Settings.Tracer_Origin = selected
+end)
+
+Library.addToggle(tab2, "Show FOV Circle", "Mostrar círculo FOV", false, function(state)
+    ring.Visible = state
+end)
+
+Library.addToggle(tab2, "ESP LineScope", "", savedConfig.lineScopeActive or false, function(state)
+    ToggleLineScope(state)
+end)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+local espname = savedConfig.espname or false
+local maxSize = 12
+
+local function getTeamsWithPlayers()
+    local teams = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Team then
+            teams[player.Team] = (teams[player.Team] or 0) + 1
+        end
+    end
+    return teams
+end
+
+local function moreThanOneTeam()
+    local teams = getTeamsWithPlayers()
+    local count = 0
+    for _, numPlayers in pairs(teams) do
+        if numPlayers > 0 then
+            count = count + 1
+        end
+    end
+    return count > 1
+end
+
+local function getValidTargets()
+    local validTargets = {}
+    local multipleTeams = moreThanOneTeam()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            if multipleTeams then
+                if player.Team ~= LocalPlayer.Team then
+                    table.insert(validTargets, player)
+                end
+            else
+                table.insert(validTargets, player)
+            end
+        end
+    end
+    return validTargets
+end
+
+local function createBillboard(player)
+    if player == LocalPlayer then return end
+
+    local head = player.Character and player.Character:FindFirstChild("Head")
+    if not head then
+        player.CharacterAdded:Wait()
+        head = player.Character:WaitForChild("Head")
+    end
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Parent = head
+    billboard.Adornee = head
+    billboard.Size = UDim2.new(0, maxSize, 0, maxSize)
+    billboard.StudsOffset = Vector3.new(0, 2, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 500
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Parent = billboard
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = player.Name
+    textLabel.TextStrokeTransparency = 0.8
+    textLabel.TextSize = 7
+    textLabel.TextColor3 = player.Team and player.Team.TeamColor.Color or Color3.fromRGB(255, 255, 255)
+end
+
+local function removeBillboards()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local head = player.Character:FindFirstChild("Head")
+            if head then
+                local billboard = head:FindFirstChildOfClass("BillboardGui")
+                if billboard then
+                    billboard:Destroy()
+                end
+            end
+        end
+    end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        if espname and player ~= LocalPlayer then
+            createBillboard(player)
+        end
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if player ~= LocalPlayer then
+        local head = player.Character and player.Character:FindFirstChild("Head")
+        if head then
+            local billboard = head:FindFirstChildOfClass("BillboardGui")
+            if billboard then
+                billboard:Destroy()
+            end
+        end
+    end
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    if player.Character and player ~= LocalPlayer then
+        createBillboard(player)
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and player ~= LocalPlayer then
+            local head = player.Character:FindFirstChild("Head")
+            if espname then
+                if head and not head:FindFirstChildOfClass("BillboardGui") then
+                    createBillboard(player)
+                end
+            else
+                if head then
+                    local billboard = head:FindFirstChildOfClass("BillboardGui")
+                    if billboard then
+                        billboard:Destroy()
+                    end
+                end
+            end
+        end
+    end
+end)
+
+Library.addToggle(tab2, "ESP Name", "",espname, function(state)
+    espname = state
+    savedConfig.espname = espname
+    saveConfig(savedConfig)
+    if not espname then
+        removeBillboards()
+    end
+end)
+
+local highlightTemplate = Instance.new("Highlight")
+highlightTemplate.Name = "Highlight"
+highlightTemplate.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+highlightTemplate.FillColor = Color3.fromRGB(0, 255, 255)
+highlightTemplate.OutlineColor = Color3.fromRGB(255, 255, 255)
+highlightTemplate.FillTransparency = 0.7
+highlightTemplate.OutlineTransparency = 0
+
+local function getTeamsWithPlayers()
+    local teams = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Team then
+            teams[p.Team] = (teams[p.Team] or 0) + 1
+        end
+    end
+    return teams
+end
+
+local function moreThanOneTeam()
+    local teams = getTeamsWithPlayers()
+    local count = 0
+    for _, numPlayers in pairs(teams) do
+        if numPlayers > 0 then
+            count = count + 1
+        end
+    end
+    return count > 1
+end
+
+local function isValidTarget(p)
+    if p == LocalPlayer then return false end
+    if not p.Character then return false end
+    if moreThanOneTeam() then
+        if p.Team == LocalPlayer.Team then
+            return false
+        end
+    end
+    return true
+end
+
+local function GetColor(p)
+    return p.Team and p.Team.TeamColor.Color or highlightTemplate.FillColor
+end
+
+local function UpdateHighlight(character, player)
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local h = root:FindFirstChildOfClass("Highlight")
+    local color = GetColor(player)
+
+    if h then
+        h.FillColor = color
+    elseif esp and character:FindFirstChild("Humanoid").Health > 0 then
+        h = highlightTemplate:Clone()
+        h.FillColor = color
+        h.Adornee = character
+        h.Parent = root
+    end
+end
+
+local function UpdatePlayer(p)
+    if not esp then return end
+    if not isValidTarget(p) then
+        if p.Character then
+            local root = p.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local h = root:FindFirstChildOfClass("Highlight")
+                if h then h:Destroy() end
+            end
+        end
+        return
+    end
+    local character = p.Character
+    if character and character:FindFirstChild("Humanoid") then
+        UpdateHighlight(character, p)
+    end
+end
+
+local function Cleanup()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character then
+            local root = p.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                for _, obj in pairs(root:GetChildren()) do
+                    if obj:IsA("Highlight") then
+                        obj:Destroy()
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function TrackPlayer(p)
+    local function TrackCharacter(character)
+        local humanoid = character:WaitForChild("Humanoid")
+        humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+            UpdatePlayer(p)
+        end)
+        UpdatePlayer(p)
+    end
+
+    p.CharacterAdded:Connect(TrackCharacter)
+    if p.Character then
+        TrackCharacter(p.Character)
+    end
+
+    if p:FindFirstChild("Team") then
+        p.Team:GetPropertyChangedSignal("TeamColor"):Connect(function()
+            if esp then UpdatePlayer(p) end
+        end)
+        p:GetPropertyChangedSignal("Team"):Connect(function()
+            if esp then UpdatePlayer(p) end
+        end)
+    end
+end
+
+Players.PlayerAdded:Connect(TrackPlayer)
+Players.PlayerRemoving:Connect(function(p)
+    if p.Character then
+        local root = p.Character:FindFirstChild("HumanoidRootPart")
+        if root then
+            local h = root:FindFirstChildOfClass("Highlight")
+            if h then h:Destroy() end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if esp then
+        for _, p in pairs(Players:GetPlayers()) do
+            UpdatePlayer(p)
+        end
+    end
+end)
+
+Library.addToggle(tab2, "ESP Normal", "",savedConfig.espEnabled or false, function(s)
+    esp = s
+    savedConfig.espEnabled = s
+    saveConfig(savedConfig)
+    Cleanup()
+    if esp then
+        for _, p in pairs(Players:GetPlayers()) do
+            UpdatePlayer(p)
+        end
+    end
+end)
+
+Library.addToggle(tab2, "Tracer", "", Settings.Tracers, function(state)
+    Settings.Tracers = state
+    savedConfig.tracersEnabled = state
+    saveConfig(savedConfig)
+end)
+
+for _, v in pairs(Players:GetPlayers()) do
+    if v.Name ~= LocalPlayer.Name then
+        UpdateESP(v)
+    end
+end
+
+Players.PlayerAdded:Connect(function(newplr)
+    if newplr.Name ~= LocalPlayer.Name then
+        UpdateESP(newplr)
+    end
+end)
+
+Library.addToggle(tab2, "Chams", "", savedConfig.chamsEnabled or false, function(state)
+    getgenv().ESP = state
+    savedConfig.chamsEnabled = state
+    saveConfig(savedConfig)
+end)
+
+local RS = game:GetService("ReplicatedStorage")
+local RSrv = game:GetService("RunService")
+local Plr = game:GetService("Players")
+
+local LP = Plr.LocalPlayer
+getgenv().ESP = savedConfig.chamsEnabled or false
+
+local pAds = {}
+
+local function getTeamColor(plr)
+    return plr.Team and plr.Team.TeamColor.Color or Color3.new(255, 255, 255)
+end
+
+local function cAd(p, color)
+    local a = Instance.new("BoxHandleAdornment")
+    a.Name = "espAdornment"
+    a.Size = p.Size
+    a.Color3 = color
+    a.Transparency = 0.8
+    a.AlwaysOnTop = true
+    a.Adornee = p
+    a.ZIndex = true
+    a.Parent = p
+    return a
+end
+
+local function aRC(c, color)
+    if not c then return end
+    for _, p in ipairs(c:GetChildren()) do
+        if p:IsA("BasePart") then
+            pAds[c] = pAds[c] or {}
+            if not pAds[c][p] then
+                pAds[c][p] = cAd(p, color)
+            else
+                pAds[c][p].Color3 = color
+            end
+        end
+    end
+end
+
+local function oPD(plr)
+    local c = plr.Character
+    if c and pAds[c] then
+        for _, a in pairs(pAds[c]) do
+            a:Destroy()
+        end
+        pAds[c] = nil
+    end
+end
+
+local function updateESP()
+    if not getgenv().ESP then
+        for _, c in pairs(pAds) do
+            for _, a in pairs(c) do
+                a:Destroy()
+            end
+        end
+        pAds = {}
+        return
+    end
+
+    for _, plr in ipairs(Plr:GetPlayers()) do
+        if plr ~= LP and plr.Character then
+            local teamColor = getTeamColor(plr)
+            aRC(plr.Character, teamColor)
+        end
+    end
+end
+
+Plr.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function(c)
+        if plr ~= LP and getgenv().ESP then
+            aRC(c, getTeamColor(plr))
+        end
+        c:WaitForChild("Humanoid").Died:Connect(function()
+            oPD(plr)
+        end)
+    end)
+end)
+
+RSrv.Heartbeat:Connect(updateESP)
+
+Library.addLabel(tab2, "For The Toggle Button")
+
+savedConfig.HideButton = savedConfig.HideButton or false
+
+Library.addToggle(tab2, "Hide Toggle", "", savedConfig.HideButton, function(state)
+    button.Visible = state
+    savedConfig.HideButton = state
+    saveConfig(savedConfig)
+end)
+
+Library.AddKeybind(tab2, "Key for the Aimbot", Enum.KeyCode.E, function()
+    aimbotKey = Enum.KeyCode.E
+    savedConfig.AimbotKey = aimbotKey
+    saveConfig(savedConfig)
+end)
+
+local settings = {
+    HitboxSize = 10,
+    HitboxTransparency = 0.7,
+    HitboxMaterial = "Plastic",
+    HitboxColor = Color3.fromRGB(169, 169, 169),
+    Enabled = false,
+    HitboxCollision = false
+}
+
+local runService = game:GetService("RunService")
+local players = game:GetService("Players")
+
+local originalSizes = {}
+local heartbeatConnection
+
+local function modifyRootPart()
+    heartbeatConnection = runService.Heartbeat:Connect(function()
+        for _, player in pairs(players:GetPlayers()) do
+            if player ~= players.LocalPlayer then
+                pcall(function()
+                    local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                    if rootPart then
+                        if settings.Enabled then
+                            if not originalSizes[player] then
+                                originalSizes[player] = {
+                                    Size = rootPart.Size,
+                                    Transparency = rootPart.Transparency,
+                                    Color = rootPart.Color
+                                }
+                            end
+                            rootPart.Size = Vector3.new(settings.HitboxSize, settings.HitboxSize, settings.HitboxSize)
+                            rootPart.Transparency = settings.HitboxTransparency
+                            rootPart.Color = settings.HitboxColor
+                            rootPart.Material = Enum.Material[settings.HitboxMaterial]
+                            rootPart.CanCollide = settings.HitboxCollision
+                        else
+                            if originalSizes[player] then
+                                rootPart.Size = originalSizes[player].Size
+                                rootPart.Transparency = originalSizes[player].Transparency
+                                rootPart.Color = originalSizes[player].Color
+                                originalSizes[player] = nil
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+if Library and tab3 then
+    Library.addToggle(tab3, "Hitbox Expander", "", settings.Enabled, function(state)
+        settings.Enabled = state
+        if settings.Enabled then
+            modifyRootPart()
+        else
+            if heartbeatConnection then
+                heartbeatConnection:Disconnect()
+            end
+        end
+    end)
+
+    Library.addTextbox(tab3, "Hitbox Size", tostring(settings.HitboxSize), "10", function(value)
+        settings.HitboxSize = tonumber(value) or settings.HitboxSize
+    end)
+
+    Library.addTextbox(tab3, "Hitbox Transparency", tostring(settings.HitboxTransparency), "0.7", function(value)
+        settings.HitboxTransparency = tonumber(value) or settings.HitboxTransparency
+    end)
+
+    Library.addToggle(tab3, "Hitbox Collision", "", settings.HitboxCollision, function(state)
+        settings.HitboxCollision = state
+    end)
+
+    Library.addDropdown(tab3, "Select Hitbox Material", "Plastic", {
+        "Plastic", "SmoothPlastic", "Glass", "Neon", "Wood", "CorrodedMetal",
+        "ForceField", "Slate", "DiamondPlate", "Granite", "Marble", "Cobblestone", "WoodenPlanks"
+    }, function(value)
+        settings.HitboxMaterial = value
+    end)
+
+    Library.AddColorPicker(tab3, "Select a color", Color3.fromRGB(255, 0, 0), function(color)
+        settings.HitboxColor = color
+    end)
+else
+    warn("Library or tab2 is nil!")
+end
+
+modifyRootPart()
+
+local originalStates = {}
+
+Library.addToggle(tab4, "Noclip", "", false, function(state)
+    getgenv().Noclip = state
+    if not state then
+        for part, canCollide in pairs(originalStates) do
+            if part then
+                part.CanCollide = canCollide
+            end
+        end
+        originalStates = {}
+    end
+end)
+
+RunService.Stepped:Connect(function()
+    if not getgenv().Noclip or not player.Character then return end
+
+    for _, part in ipairs(player.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            originalStates[part] = originalStates[part] or part.CanCollide
+            part.CanCollide = false
+        end
+    end
+end)
+
+local config = { FOV = 70, FOVEnabled = false }
+
+Library.addSlider(tab4, "Adjust FOV", 0, 150, 1, 1, function(value)
+    config.FOV = value
+    if config.FOVEnabled then workspace.CurrentCamera.FieldOfView = value end
+end)
+
+Library.addToggle(tab4, "Activate FOV", "", false, function(state)
+    config.FOVEnabled = state
+    workspace.CurrentCamera.FieldOfView = state and config.FOV or 70
+end)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local plr = Players.LocalPlayer
+
+getgenv().settings = {
+    speed = { value = 17, loop = false },
+    jump = { power = 50, loop = false, infinite = false },
+    connections = {}
+}
+
+local settings = getgenv().settings
+
+local function updateHumanoid(property, value)
+    local character = plr.Character or plr.CharacterAdded:Wait()
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid[property] = value
+    end
+end
+
+local function disconnectAllConnections()
+    for key, connection in pairs(settings.connections) do
+        if connection then
+            connection:Disconnect()
+            settings.connections[key] = nil
+        end
+    end
+end
+
+plr.CharacterAdded:Connect(function()
+    disconnectAllConnections()
+    task.wait(0.5)
+
+    if settings.speed.loop then
+        settings.connections.speed = RunService.Heartbeat:Connect(function()
+            updateHumanoid("WalkSpeed", settings.speed.value)
+        end)
+    else
+        updateHumanoid("WalkSpeed", settings.speed.value)
+    end
+
+    if settings.jump.loop then
+        settings.connections.jump = RunService.Heartbeat:Connect(function()
+            updateHumanoid("JumpPower", settings.jump.power)
+        end)
+    else
+        updateHumanoid("JumpPower", settings.jump.power)
+    end
+
+    if settings.jump.infinite then
+        settings.connections.infinite = UserInputService.JumpRequest:Connect(function()
+            local character = plr.Character or plr.CharacterAdded:Wait()
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid:ChangeState("Jumping") end
+        end)
+    end
+end)
+
+Library.addSlider(tab4, "Speed", 0, 100, settings.speed.value, 1, function(value)
+    settings.speed.value = value
+    if not settings.speed.loop then
+        updateHumanoid("WalkSpeed", value)
+    end
+end)
+
+Library.addToggle(tab4, "Loop speed", "bucle de velocidad", false, function(state)
+    settings.speed.loop = state
+    if state then
+        if settings.connections.speed then settings.connections.speed:Disconnect() end
+        settings.connections.speed = RunService.Heartbeat:Connect(function()
+            updateHumanoid("WalkSpeed", settings.speed.value)
+        end)
+    else
+        if settings.connections.speed then
+            settings.connections.speed:Disconnect()
+            settings.connections.speed = nil
+        end
+    end
+end)
+
+Library.addSlider(tab4, "Power Jump", 0, 100, settings.jump.power, 1, function(value)
+    settings.jump.power = value
+    if not settings.jump.loop then
+        updateHumanoid("JumpPower", value)
+    end
+end)
+
+Library.addToggle(tab4, "Power Jump/Loop", "bucle de poder de salto", false, function(state)
+    settings.jump.loop = state
+    if state then
+        if settings.connections.jump then settings.connections.jump:Disconnect() end
+        settings.connections.jump = RunService.Heartbeat:Connect(function()
+            updateHumanoid("JumpPower", settings.jump.power)
+        end)
+    else
+        if settings.connections.jump then
+            settings.connections.jump:Disconnect()
+            settings.connections.jump = nil
+        end
+    end
+end)
+
+Library.addToggle(tab4, "Infinite Jump", "salto infinito", false, function(state)
+    settings.jump.infinite = state
+    if state then
+        if settings.connections.infinite then settings.connections.infinite:Disconnect() end
+        settings.connections.infinite = UserInputService.JumpRequest:Connect(function()
+            local character = plr.Character or plr.CharacterAdded:Wait()
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid:ChangeState("Jumping") end
+        end)
+    else
+        if settings.connections.infinite then
+            settings.connections.infinite:Disconnect()
+            settings.connections.infinite = nil
+        end
+    end
+end)
